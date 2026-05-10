@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+@theme {
+  --color-slate-950: #020617;
+  --color-cyan-400: #22d3ee;
+}
+
+/* Force the background to stay dark */
+:root {
+  background-color: #020617;
+  color: white;
+}
