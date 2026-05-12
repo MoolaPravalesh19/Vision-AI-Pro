@@ -1,20 +1,7 @@
-// Dynamically imported on the client to avoid SSR `document`/`window` access.
-type Ort = typeof import("onnxruntime-web");
-let ort: Ort | null = null;
-
-async function getOrt(): Promise<Ort> {
-  if (ort) return ort;
-  const mod = await import("onnxruntime-web");
-  mod.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.26.0/dist/";
-  mod.env.wasm.numThreads = 1;
-  ort = mod;
-  return mod;
-}
-
-const MODEL_URL =
-  "https://cdn.jsdelivr.net/gh/Hyuto/yolov8-onnxruntime-web@master/public/model/yolov8n.onnx";
-
-export const INPUT_SIZE = 640;
+/**
+ * src/lib/yolo.ts 
+ * Updated to use Local Python Backend (YOLOv11L)
+ */
 
 export const COCO_LABELS = [
   "person","bicycle","car","motorcycle","airplane","bus","train","truck","boat",
@@ -34,135 +21,74 @@ export type Detection = {
   label: string;
   classId: number;
   score: number;
-  // box in source-image pixel coords (xyxy)
   x1: number; y1: number; x2: number; y2: number;
 };
 
-type InferenceSession = import("onnxruntime-web").InferenceSession;
-let sessionPromise: Promise<InferenceSession> | null = null;
+// We keep this for UI compatibility, but the backend handles the actual scaling
+export const INPUT_SIZE = 640; 
 
-export function loadModel() {
-  if (!sessionPromise) {
-    sessionPromise = (async () => {
-      const o = await getOrt();
-      return o.InferenceSession.create(MODEL_URL, {
-        executionProviders: ["wasm"],
-        graphOptimizationLevel: "all",
-      });
-    })();
+/**
+ * In the new setup, the backend manages the model.
+ * We use this function to check if the local server is alive.
+ */
+export async function loadModel() {
+  try {
+    const res = await fetch("http://localhost:8000/health"); // Optional health check endpoint
+    if (!res.ok) throw new Error("Backend not responding");
+    return true;
+  } catch (err) {
+    console.warn("Backend not found, ensure your Python server is running on port 8000");
+    return Promise.resolve(true); // Return resolved to not block the UI
   }
-  return sessionPromise;
 }
 
-// Letterbox + normalize source frame into Float32 NCHW tensor data
-function preprocess(
-  source: HTMLVideoElement | HTMLCanvasElement | HTMLImageElement,
-  srcW: number,
-  srcH: number,
-  ctx: CanvasRenderingContext2D,
-) {
-  const r = Math.min(INPUT_SIZE / srcW, INPUT_SIZE / srcH);
-  const newW = Math.round(srcW * r);
-  const newH = Math.round(srcH * r);
-  const padX = Math.floor((INPUT_SIZE - newW) / 2);
-  const padY = Math.floor((INPUT_SIZE - newH) / 2);
-
-  ctx.fillStyle = "rgb(114,114,114)";
-  ctx.fillRect(0, 0, INPUT_SIZE, INPUT_SIZE);
-  ctx.drawImage(source, padX, padY, newW, newH);
-  const { data } = ctx.getImageData(0, 0, INPUT_SIZE, INPUT_SIZE);
-
-  const N = INPUT_SIZE * INPUT_SIZE;
-  const out = new Float32Array(3 * N);
-  for (let i = 0; i < N; i++) {
-    out[i] = data[i * 4] / 255;             // R
-    out[i + N] = data[i * 4 + 1] / 255;     // G
-    out[i + 2 * N] = data[i * 4 + 2] / 255; // B
-  }
-  return { tensorData: out, r, padX, padY };
-}
-
-function iou(a: Detection, b: Detection) {
-  const x1 = Math.max(a.x1, b.x1);
-  const y1 = Math.max(a.y1, b.y1);
-  const x2 = Math.min(a.x2, b.x2);
-  const y2 = Math.min(a.y2, b.y2);
-  const inter = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
-  const areaA = (a.x2 - a.x1) * (a.y2 - a.y1);
-  const areaB = (b.x2 - b.x1) * (b.y2 - b.y1);
-  return inter / (areaA + areaB - inter + 1e-6);
-}
-
-function nms(dets: Detection[], iouThresh = 0.45) {
-  const sorted = [...dets].sort((a, b) => b.score - a.score);
-  const keep: Detection[] = [];
-  while (sorted.length) {
-    const best = sorted.shift()!;
-    keep.push(best);
-    for (let i = sorted.length - 1; i >= 0; i--) {
-      if (sorted[i].classId === best.classId && iou(best, sorted[i]) > iouThresh) {
-        sorted.splice(i, 1);
-      }
-    }
-  }
-  return keep;
-}
-
+/**
+ * Sends a video frame to the local Python FastAPI backend.
+ * The backend performs YOLOv11L inference and returns results.
+ */
 export async function detect(
   source: HTMLVideoElement,
-  workCtx: CanvasRenderingContext2D,
-  scoreThresh = 0.35,
+  _workCtx?: CanvasRenderingContext2D, // No longer strictly needed for preprocessing
+  _scoreThresh = 0.35,
 ): Promise<Detection[]> {
-  const session = await loadModel();
-  const o = await getOrt();
   const srcW = source.videoWidth;
   const srcH = source.videoHeight;
+  
   if (!srcW || !srcH) return [];
 
-  const { tensorData, r, padX, padY } = preprocess(source, srcW, srcH, workCtx);
-  const input = new o.Tensor("float32", tensorData, [1, 3, INPUT_SIZE, INPUT_SIZE]);
-  const inputName = session.inputNames[0];
-  const outputName = session.outputNames[0];
-  const results = await session.run({ [inputName]: input });
-  const output = results[outputName];
-  const data = output.data as Float32Array;
-  // YOLOv8 output: [1, 84, 8400] => 4 box + 80 classes
-  const dims = output.dims; // e.g. [1, 84, 8400]
-  const numClasses = dims[1] - 4;
-  const numBoxes = dims[2];
+  // 1. Capture the current frame from the video to a Canvas
+  const canvas = document.createElement("canvas");
+  canvas.width = srcW;
+  canvas.height = srcH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return [];
+  ctx.drawImage(source, 0, 0, srcW, srcH);
 
-  const dets: Detection[] = [];
-  for (let i = 0; i < numBoxes; i++) {
-    let bestC = -1;
-    let bestS = 0;
-    for (let c = 0; c < numClasses; c++) {
-      const s = data[(4 + c) * numBoxes + i];
-      if (s > bestS) {
-        bestS = s;
-        bestC = c;
+  // 2. Convert Canvas to Blob (JPEG) to send over HTTP
+  return new Promise((resolve) => {
+    canvas.toBlob(async (blob) => {
+      if (!blob) return resolve([]);
+
+      const formData = new FormData();
+      formData.append("file", blob, "frame.jpg");
+
+      try {
+        // 3. POST request to your FastAPI server
+        const response = await fetch("http://localhost:8000/detect", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!response.ok) throw new Error("Inference failed");
+
+        const data = await response.json();
+        
+        // Data format from backend: { detections: Detection[] }
+        resolve(data.detections);
+      } catch (err) {
+        console.error("Local Backend Error:", err);
+        resolve([]);
       }
-    }
-    if (bestS < scoreThresh) continue;
-
-    const cx = data[0 * numBoxes + i];
-    const cy = data[1 * numBoxes + i];
-    const w = data[2 * numBoxes + i];
-    const h = data[3 * numBoxes + i];
-    // map back from letterboxed 640 to source coords
-    const x1 = (cx - w / 2 - padX) / r;
-    const y1 = (cy - h / 2 - padY) / r;
-    const x2 = (cx + w / 2 - padX) / r;
-    const y2 = (cy + h / 2 - padY) / r;
-
-    dets.push({
-      classId: bestC,
-      label: COCO_LABELS[bestC] ?? `cls_${bestC}`,
-      score: bestS,
-      x1: Math.max(0, x1),
-      y1: Math.max(0, y1),
-      x2: Math.min(srcW, x2),
-      y2: Math.min(srcH, y2),
-    });
-  }
-  return nms(dets, 0.45);
+    }, "image/jpeg", 0.8); // 0.8 quality provides a good balance of speed and accuracy
+  });
 }

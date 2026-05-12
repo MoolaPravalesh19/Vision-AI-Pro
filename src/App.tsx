@@ -59,13 +59,14 @@ export default function App() {
     return workCanvasRef.current.getContext("2d", { willReadFrequently: true })!;
   }, []);
 
+  // Check connection to the Python Backend on mount
   useEffect(() => {
     setModelStatus("loading");
     loadModel()
       .then(() => setModelStatus("ready"))
       .catch((err) => {
         console.error(err);
-        setModelError(err?.message ?? "Failed to load model");
+        setModelError("Could not connect to Python backend. Ensure server is running on port 8000.");
         setModelStatus("error");
       });
   }, []);
@@ -85,11 +86,13 @@ export default function App() {
     const loop = async () => {
       if (!runningRef.current) return;
       const video = webcamRef.current?.video as HTMLVideoElement | undefined;
+      
       if (video && video.readyState === 4 && modelStatus === "ready") {
         try {
           const t0 = performance.now();
           const dets = await detect(video, getWorkCtx(), 0.4);
           const t1 = performance.now();
+          
           setLatency(Math.round(t1 - t0));
           setDetections(dets);
           drawOverlay(dets, video.videoWidth, video.videoHeight);
@@ -177,7 +180,7 @@ export default function App() {
               <span className="bg-gradient-to-r from-cyan-300 to-violet-400 bg-clip-text text-transparent">VISION</span>{" "}
               <span className="text-white">PRO AI</span>
             </h1>
-            <p className="text-xs text-slate-400 tracking-wider uppercase">Realtime YOLOv8-n neural perception</p>
+            <p className="text-xs text-slate-400 tracking-wider uppercase">Local YOLOv11L Neural Backend</p>
           </div>
         </div>
 
@@ -185,10 +188,10 @@ export default function App() {
           <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-800 bg-slate-900/60 backdrop-blur">
             <FiWifi className="text-cyan-400" />
             <span className="text-xs font-medium text-slate-300">
-              {modelStatus === "ready" && "Model ready · WASM"}
-              {modelStatus === "loading" && "Loading YOLOv8-n…"}
-              {modelStatus === "error" && "Model error"}
-              {modelStatus === "idle" && "Edge node · online"}
+              {modelStatus === "ready" && "Server Connected · YOLOv11L"}
+              {modelStatus === "loading" && "Connecting to local backend…"}
+              {modelStatus === "error" && "Backend Offline"}
+              {modelStatus === "idle" && "Initializing node…"}
             </span>
           </div>
           <button
@@ -210,7 +213,7 @@ export default function App() {
 
       {modelStatus === "error" && (
         <div className="mb-6 p-4 rounded-xl border border-rose-500/40 bg-rose-500/10 text-sm text-rose-200">
-          Failed to load YOLOv8-n model: {modelError}
+          Backend Error: {modelError}
         </div>
       )}
 
@@ -223,7 +226,7 @@ export default function App() {
           <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-1.5 rounded-full bg-black/60 backdrop-blur border border-slate-800">
             <span className={`w-2 h-2 rounded-full ${isLive ? "bg-rose-500 animate-pulse" : "bg-slate-500"}`} />
             <span className="text-[11px] font-semibold tracking-widest uppercase text-white">
-              {isLive ? `REC · ${mm}:${ss}` : modelStatus === "loading" ? "Loading model" : "Standby"}
+              {isLive ? `REC · ${mm}:${ss}` : modelStatus === "loading" ? "Probing Server" : "Standby"}
             </span>
           </div>
 
@@ -245,12 +248,12 @@ export default function App() {
                 <FiCpu className="text-4xl text-cyan-400 animate-pulse" />
               </div>
               <p className="text-sm tracking-[0.3em] uppercase">
-                {modelStatus === "loading" ? "Loading YOLOv8-n…" : "System Standby"}
+                {modelStatus === "loading" ? "Syncing with YOLOv11L…" : "System Standby"}
               </p>
               <p className="text-xs mt-2 text-slate-500">
-                {modelStatus === "ready" ? <>Click <span className="text-cyan-400 font-semibold">START LIVE AI</span> to engage</>
-                  : modelStatus === "error" ? <>Model unavailable — check console</>
-                  : <>Fetching ~12 MB ONNX weights…</>}
+                {modelStatus === "ready" ? <>Backend Active — click <span className="text-cyan-400 font-semibold">START LIVE AI</span></>
+                  : modelStatus === "error" ? <>Backend unreachable — check main.py</>
+                  : <>Waiting for local server response…</>}
               </p>
             </div>
           )}
@@ -260,7 +263,7 @@ export default function App() {
           <div className="grid grid-cols-2 gap-3">
             <Stat label="FPS" value={isLive ? `${fps}` : "—"} icon={FiActivity} accent />
             <Stat label="Latency" value={isLive ? `${latency} ms` : "—"} icon={FiZap} />
-            <Stat label="Model" value="YOLOv8-n" icon={FiCpu} />
+            <Stat label="Model" value="YOLOv11L" icon={FiCpu} />
             <Stat label="Input" value={`${INPUT_SIZE}×${INPUT_SIZE}`} icon={FiCamera} />
           </div>
 
@@ -273,7 +276,7 @@ export default function App() {
             </div>
             {topDetections.length === 0 ? (
               <p className="text-xs text-slate-500">
-                {isLive ? "Scanning frame…" : "Start the feed to see real-time COCO classes."}
+                {isLive ? "Scanning frame…" : "Connecting to backend for real-time perception."}
               </p>
             ) : (
               <ul className="space-y-3">
@@ -299,11 +302,11 @@ export default function App() {
             )}
           </div>
 
-          <div className="bg-gradient-to-br from-cyan-400 to-violet-500 rounded-2xl p-5 text-slate-950">
-            <p className="text-[10px] tracking-widest uppercase opacity-80">Neural Core</p>
-            <p className="text-2xl font-black mt-1">YOLOv8-n · COCO</p>
+          <div className="bg-gradient-to-br from-cyan-400 to-violet-500 rounded-2xl p-5 text-slate-950 shadow-lg shadow-cyan-500/20">
+            <p className="text-[10px] tracking-widest uppercase opacity-80">Local Server Core</p>
+            <p className="text-2xl font-black mt-1">YOLOv11L · COCO</p>
             <p className="text-xs opacity-90 mt-2">
-              ONNX Runtime Web · WASM backend · 80 classes · in-browser inference.
+              High-precision inference running on local Python server. Supports 80 COCO classes with enhanced perception.
             </p>
           </div>
         </aside>
